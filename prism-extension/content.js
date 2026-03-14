@@ -1,22 +1,58 @@
-console.log("PRISM scanning page")
+function autoRejectCookies() {
 
-let text = document.body.innerText.toLowerCase()
+    const rejectWords = [
+        "reject",
+        "reject all",
+        "decline",
+        "only necessary",
+        "essential only"
+    ]
 
-let scamWords = [
-    "urgent",
-    "verify now",
-    "suspended",
-    "gift card",
-    "police",
-    "act immediately"
-]
+    let buttons = document.querySelectorAll("button")
 
-let found = scamWords.some(word => text.includes(word))
+    buttons.forEach(btn => {
 
-if (found) {
+        let text = btn.innerText.toLowerCase()
 
-    chrome.runtime.sendMessage({
-        type: "scamWarning"
+        if (rejectWords.some(word => text.includes(word))) {
+
+            console.log("PRISM rejecting cookies")
+
+            btn.click()
+
+        }
+
     })
 
 }
+
+setTimeout(autoRejectCookies, 2000)
+
+function detectTrackers() {
+
+    let trackers = [
+        "doubleclick",
+        "facebook",
+        "google-analytics",
+        "hotjar",
+        "mixpanel"
+    ]
+
+    let count = 0
+
+    trackers.forEach(t => {
+
+        if (document.documentElement.innerHTML.includes(t)) {
+            count++
+        }
+
+    })
+
+    chrome.runtime.sendMessage({
+        type: "trackerCount",
+        count: count
+    })
+
+}
+
+detectTrackers()

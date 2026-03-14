@@ -3,7 +3,6 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>PRISM</title>
     <link rel="stylesheet" href="popup.css">
 </head>
 
@@ -15,22 +14,23 @@
         Site: <span id="site">Loading...</span>
     </div>
 
-    <div class="scoreBox">
-        Safety Score
-        <h2 id="score">--</h2>
+    <div class="section">
+        <h3>Cookie Protection</h3>
+
+        <p id="essential">✔ Essential cookies allowed</p>
+        <p id="tracking">❌ Tracking cookies blocked</p>
+        <p id="ads">❌ Advertising cookies blocked</p>
+
     </div>
 
     <div class="section">
-        <h3>Privacy Nutrition Label</h3>
-        <p id="privacy">Scanning website...</p>
+        <h3>Trackers Prevented</h3>
+
+        <h2 id="blocked">0</h2>
+
     </div>
 
-    <div class="section">
-        <h3>Security Warnings</h3>
-        <ul id="warnings"></ul>
-    </div>
-
-    <button id="reportBtn">⚠ Report Scam</button>
+    <button id="scan">Scan Website</button>
 
     <script src="popup.js"></script>
 
