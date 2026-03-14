@@ -8,6 +8,8 @@
   let badgeEl = null;
   let bannerEl = null;
   let urgencyScore = 0;
+  let fakeTimerPenalty = 0;
+  const knownTimers = new Map();
 
   // Configuration for homograph detection
   const confusables = {
@@ -227,76 +229,171 @@
     }
   }
 
+  // Helper to check element visibility
+  function isVisible(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    return true;
+  }
+
+  function getVisualMultiplier(el) {
+    let mult = 1.0;
+    if (!el) return mult;
+    const style = window.getComputedStyle(el);
+    const fontSize = parseFloat(style.fontSize);
+    if (fontSize > 20) mult += 0.5;
+    if (style.fontWeight === '600' || style.fontWeight === '700' || style.fontWeight === 'bold') mult += 0.3;
+    if (style.color === 'rgb(255, 0, 0)' || style.color === 'red') mult += 0.3;
+    if (style.position === 'fixed' || style.position === 'sticky') mult += 0.5;
+    return mult;
+  }
+
+  function getProximityMultiplier(el) {
+    if (!el) return 1.0;
+    let current = el;
+    for (let i = 0; i < 4; i++) {
+      if (!current) break;
+      if (current.tagName === 'BUTTON' || (current.tagName === 'INPUT' && current.type === 'submit')) return 1.5;
+      if (current.tagName === 'A') {
+        const text = current.textContent ? current.textContent.toLowerCase() : '';
+        if (text.includes('buy') || text.includes('checkout') || text.includes('cart')) return 1.5;
+      }
+      current = current.parentElement;
+    }
+    return 1.0;
+  }
+
+  function parseTimeSpanToSeconds(text) {
+    const match = text.match(/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
+    if (!match) return -1;
+    let hours = 0, mins = 0, secs = 0;
+    if (match[3]) {
+      hours = parseInt(match[1], 10);
+      mins = parseInt(match[2], 10);
+      secs = parseInt(match[3], 10);
+    } else {
+      mins = parseInt(match[1], 10);
+      secs = parseInt(match[2], 10);
+    }
+    return hours * 3600 + mins * 60 + secs;
+  }
+
+  function trackTimer(node) {
+    if (fakeTimerPenalty > 0) return;
+    const el = node.parentElement;
+    if (!el) return;
+
+    const currentSeconds = parseTimeSpanToSeconds(node.nodeValue);
+    if (currentSeconds === -1) return;
+
+    const now = Date.now();
+    const existing = knownTimers.get(el);
+
+    if (existing) {
+      const elapsedMs = now - existing.timestamp;
+      if (elapsedMs < 500) return; // Ignore too frequent updates
+
+      const expectedSeconds = existing.seconds - (elapsedMs / 1000);
+      if (currentSeconds > existing.seconds + 2 || currentSeconds < expectedSeconds - 5) {
+        console.log('[DPS] Fake timer detected!', el);
+        fakeTimerPenalty = 50;
+      } else {
+        knownTimers.set(el, { seconds: currentSeconds, timestamp: now });
+      }
+    } else {
+      knownTimers.set(el, { seconds: currentSeconds, timestamp: now });
+    }
+  }
+
   // 3. Urgency Scoring Algorithm
   function scoreUrgency(doc) {
-    let score = 0;
+    let score = fakeTimerPenalty;
     try {
       const walker = document.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, null, false);
-      let textNodes = [];
       let node;
+
+      const timerRegex = /\b\d{1,2}:\d{2}(:\d{2})?\b/i;
+      
+      const scarcityPatterns = [
+        /only\s+\d+\s+left/i,
+        /\blimited time\b/i,
+        /\bact now\b/i,
+        /\bexpires soon\b/i,
+        /\balmost gone\b/i,
+        /\bselling fast\b/i,
+        /\bhigh demand\b/i
+      ];
+
+      const confirmShamingPatterns = [
+        /no thanks, i hate/i,
+        /i prefer paying full price/i,
+        /i don't want to save/i
+      ];
+
+      const cartTimerPatterns = [
+        /cart is reserved/i,
+        /are not guaranteed/i
+      ];
+
+      const socialProofRegex = /\b\d+\s+people viewing this\b/i;
+
+      let globalCapsCount = 0;
 
       while ((node = walker.nextNode())) {
         const parent = node.parentElement;
-        if (parent && !['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) {
-          // Exclude invisible elements as best effort synchronously
-          textNodes.push(node.nodeValue);
+        if (!parent || ['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName)) continue;
+        
+        if (!isVisible(parent)) continue;
+
+        const text = node.nodeValue.trim();
+        if (!text) continue;
+
+        const lowerText = text.toLowerCase();
+        const combinedMult = getVisualMultiplier(parent) * getProximityMultiplier(parent);
+
+        if ((timerRegex.test(text) && /\b(countdown|timer|ends in)\b/.test(lowerText)) || lowerText.includes('countdown timer')) {
+          score += 30 * combinedMult;
+          trackTimer(node);
+        } else if (timerRegex.test(text)) {
+          trackTimer(node);
+        }
+
+        for (const pattern of scarcityPatterns) {
+          if (pattern.test(lowerText)) score += 20 * combinedMult;
+        }
+
+        for (const pattern of confirmShamingPatterns) {
+          if (pattern.test(lowerText)) score += 15 * combinedMult;
+        }
+
+        for (const pattern of cartTimerPatterns) {
+          if (pattern.test(lowerText)) score += 25 * combinedMult;
+        }
+
+        if (socialProofRegex.test(lowerText)) {
+          score += 15 * combinedMult;
+        }
+
+        const words = text.split(/\s+/);
+        for (const word of words) {
+          if (/^[A-Z]{3,}[!?.,]*$/.test(word)) {
+            if (globalCapsCount < 3) {
+              globalCapsCount++;
+              score += 10 * combinedMult;
+            }
+          }
         }
       }
 
-      const fullText = textNodes.join(' ');
-      const lowerText = fullText.toLowerCase();
-
-      // Countdown timers heuristic (+30)
-      // Checks for time patterns HH:MM:SS, MM:SS next to words like ends, left, timer
-      const timerRegex = /\b\d{1,2}:\d{2}(:\d{2})?\b/g;
-      const hasTimerFormat = timerRegex.test(fullText);
-      const hasTimerWords = /\b(countdown|timer|ends in)\b/.test(lowerText);
-      if (hasTimerFormat && hasTimerWords) {
-        score += 30;
-      } else if (lowerText.includes('countdown timer')) {
-        score += 30;
-      }
-
-      // Scarcity phrases (+20 each)
-      const scarcityPatterns = [
-        /only\s+\d+\s+left/g,
-        /\blimited time\b/g,
-        /\bact now\b/g,
-        /\bexpires soon\b/g
-      ];
-
-      scarcityPatterns.forEach(pattern => {
-        const matches = lowerText.match(pattern);
-        if (matches) {
-          score += matches.length * 20;
-        }
-      });
-
-      // Social proof pressure (+15)
-      const socialProofRegex = /\b\d+\s+people viewing this\b/g;
-      const socialMatches = lowerText.match(socialProofRegex);
-      if (socialMatches) {
-        score += socialMatches.length * 15;
-      }
-
-      // All-caps shouting (+10 per instance, max 3)
-      const words = fullText.split(/\s+/);
-      let capsCount = 0;
-      for (const word of words) {
-        // Find words with NO lowercase letters and at least 3 uppercase letters
-        if (/^[A-Z]{3,}[!?.,]*$/.test(word)) {
-          capsCount++;
-        }
-      }
-      score += Math.min(3, capsCount) * 10;
-
-      // Normalize score 0 - 100
       if (score > 100) score = 100;
 
     } catch (err) {
       console.error('[DPS] Urgency scoring failed:', err);
     }
-    return score;
+    return Math.floor(score);
   }
 
   function updateBadgeScore() {
