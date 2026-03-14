@@ -57,7 +57,7 @@ async function analyzeSiteCookies() {
           }
         }
 
-        resolve({ categories, highRiskTrackers });
+        resolve({ categories, highRiskTrackers, cookies });
       });
     });
   });

@@ -16,6 +16,20 @@ document.addEventListener('DOMContentLoaded', () => {
     let domain = url.hostname;
     document.getElementById("site").innerText = domain;
     
+    // Listen for policy analysis updates from background
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg.type === "policyAnalysisUpdate") {
+        updatePolicyUI(msg.data.findings, msg.data.url);
+      }
+    });
+
+    // Request current analysis from background
+    chrome.runtime.sendMessage({ type: "getPolicyAnalysis" }, (response) => {
+      if (response && response.data) {
+        updatePolicyUI(response.data.findings, response.data.url);
+      }
+    });
+
     // Get analysis from other modules
     const cookieData = await analyzeSiteCookies();
     const trustReport = await getDomainTrustMetrics(urlString);
@@ -24,45 +38,34 @@ document.addEventListener('DOMContentLoaded', () => {
     // Check security flags (Homograph or Scam-Speech)
     const securityFlags = await checkSecurityFlags(domain, tab.id);
 
-    // Calculate Zero-Trust Score
-    let zeroTrustScore = 100;
     let warnings = [];
     
-    // Subtract 20 points for each 'Stalking' cookie
+    // Check for each 'Stalking' cookie
     if (cookieData.categories && cookieData.categories.stalking > 0) {
-      zeroTrustScore -= (cookieData.categories.stalking * 20);
       warnings.push(`Found ${cookieData.categories.stalking} tracking/stalking cookies`);
     }
 
-    // Subtract 50 points for each security flag (Homograph or Scam-Speech)
+    // Check for security flags (Homograph or Scam-Speech)
     if (securityFlags.homograph) {
-      zeroTrustScore -= 50;
       warnings.push("Possible homograph attack detected");
     }
 
     if (securityFlags.scamSpeech) {
-      zeroTrustScore -= 50;
       warnings.push("Scam-speech detected on page");
     }
 
-    // Domain checks (legacy deductions)
+    // Domain checks (legacy warnings)
     if (domain.length > 25) {
-      zeroTrustScore -= 10;
       warnings.push("Suspiciously long domain");
     }
     if (!trustReport.isHttps && url.protocol !== 'chrome:' && url.protocol !== 'chrome-extension:') {
-      zeroTrustScore -= 30;
       warnings.push("Not using HTTPS");
     }
     if (trustReport.isNewDomain) {
-      zeroTrustScore -= 20;
       warnings.push("Newly registered domain (under 6 months old)");
     }
     
-    zeroTrustScore = Math.max(0, zeroTrustScore);
-    
     const finalData = {
-      score: zeroTrustScore,
       warnings: warnings,
       privacyLabels: privacyLabels,
       domain: domain
@@ -71,6 +74,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Update UI directly in popup
     updatePopupUI(finalData, tab.id);
     
+    // Render cookies UI
+    setupCookieManagement(cookieData.cookies, url);
+
     // Also broadcast to other potential listeners (as requested)
     chrome.runtime.sendMessage({
       type: "updateZeroTrustScore",
@@ -112,25 +118,10 @@ async function checkSecurityFlags(domain, tabId) {
 }
 
 function updatePopupUI(data, tabId) {
-  // Update Score UI
-  let scoreElement = document.getElementById("score");
-  scoreElement.innerText = data.score;
+  // No score element to update anymore
   
-  let badgeColor = "#00FF00";
-  if (data.score >= 80) {
-    scoreElement.style.color = "lime";
-    badgeColor = "#00FF00"; // Green
-  } else if (data.score >= 50) {
-    scoreElement.style.color = "orange";
-    badgeColor = "#FFA500"; // Amber
-  } else {
-    scoreElement.style.color = "red";
-    badgeColor = "#FF0000"; // Red
-  }
-  
-  // Update Badge
-  chrome.action.setBadgeText({ text: data.score.toString(), tabId: tabId });
-  chrome.action.setBadgeBackgroundColor({ color: badgeColor, tabId: tabId });
+  // Clear badge
+  chrome.action.setBadgeText({ text: "", tabId: tabId });
   
   // Update Warnings
   let warningList = document.getElementById("warnings");
@@ -161,3 +152,214 @@ function updatePopupUI(data, tabId) {
   });
   privacyContainer.appendChild(labelList);
 }
+
+function setupCookieManagement(cookies, urlObj) {
+  const toggle = document.getElementById("cookieToggle");
+  const container = document.getElementById("cookieListContainer");
+  const list = document.getElementById("cookieList");
+  const btn = document.getElementById("clearAllCookiesBtn");
+  
+  if (!toggle || !container || !list || !btn) return;
+  
+  toggle.addEventListener("change", (e) => {
+    container.style.display = e.target.checked ? "block" : "none";
+  });
+  
+  let currentCookies = cookies || [];
+  
+  function renderList() {
+    list.innerHTML = "";
+    if (currentCookies.length === 0) {
+      list.innerText = "No cookies currently in use.";
+      return;
+    }
+    
+    currentCookies.forEach(cookie => {
+      const item = document.createElement("div");
+      item.style.display = "flex";
+      item.style.justifyContent = "space-between";
+      item.style.alignItems = "center";
+      item.style.borderBottom = "1px solid #334155";
+      item.style.padding = "6px 0";
+      
+      const textWrapper = document.createElement("div");
+      textWrapper.style.display = "flex";
+      textWrapper.style.flexDirection = "column";
+      textWrapper.style.maxWidth = "165px";
+
+      const nameText = document.createElement("span");
+      nameText.innerText = cookie.name;
+      nameText.style.fontSize = "10px";
+      nameText.style.color = "#94a3b8";
+      nameText.style.overflow = "hidden";
+      nameText.style.textOverflow = "ellipsis";
+      
+      const descText = document.createElement("span");
+      let description = "Site Functionality";
+      
+      // Try to get a better description
+      let info = (typeof KNOWN_COOKIES !== 'undefined') ? KNOWN_COOKIES[cookie.name] : null;
+      if (!info && typeof classifyUnknownCookie !== 'undefined') {
+        info = classifyUnknownCookie(cookie.name);
+      }
+
+      if (info) {
+        if (info.type === 'stalking') {
+          description = info.risk === 'high' ? "Behavior Tracker" : "Usage Analytics";
+        } else if (info.type === 'preference') {
+          description = "Site Preferences";
+        } else if (info.type === 'functional') {
+          description = "Login / Session";
+        }
+      }
+
+      descText.innerText = description;
+      descText.style.fontSize = "12px";
+      descText.style.fontWeight = "500";
+      descText.style.color = "#f8fafc";
+      
+      textWrapper.appendChild(descText);
+      textWrapper.appendChild(nameText);
+      
+      const delBtn = document.createElement("button");
+      delBtn.innerText = "Turn Off";
+      delBtn.style.padding = "4px 8px";
+      delBtn.style.fontSize = "10px";
+      delBtn.style.marginLeft = "5px";
+      delBtn.style.marginTop = "0";
+      delBtn.style.width = "auto";
+      delBtn.style.background = "#ef4444";
+      delBtn.onclick = () => {
+        removeCookie(cookie, urlObj, item);
+        currentCookies = currentCookies.filter(c => c.name !== cookie.name);
+        if (currentCookies.length === 0) renderList(); 
+      };
+      
+      item.appendChild(textWrapper);
+      item.appendChild(delBtn);
+      list.appendChild(item);
+    });
+  }
+  
+  renderList();
+  
+  btn.onclick = () => {
+    if(!currentCookies) return;
+    const items = list.querySelectorAll("div");
+    // Snapshot the current cookies array
+    const toRemove = [...currentCookies];
+    toRemove.forEach((cookie, index) => {
+      removeCookie(cookie, urlObj, items[index]);
+    });
+    currentCookies = [];
+    renderList();
+  };
+}
+
+function removeCookie(cookie, urlObj, listItemElement) {
+  let cookieUrl = (urlObj.protocol === "https:" ? "https://" : "http://") + cookie.domain.replace(/^\./, "") + cookie.path;
+  chrome.cookies.remove({ url: cookieUrl, name: cookie.name }, (details) => {
+    if (details) {
+      if (listItemElement && listItemElement.parentNode) listItemElement.remove();
+    } else {
+      console.error("Failed to remove cookie", chrome.runtime.lastError);
+    }
+  });
+}
+
+function updatePolicyUI(findings, url) {
+  const summaryEl = document.getElementById("policySummary");
+  const detailsEl = document.getElementById("policyDetails");
+  const toggleLabel = document.getElementById("policyToggleLabel");
+  const toggle = document.getElementById("policyToggle");
+
+  if (!summaryEl || !detailsEl || !toggleLabel || !toggle) return;
+
+  const concernCount = Object.values(findings).filter(v => v === true).length;
+  
+  if (concernCount === 0) {
+    summaryEl.innerText = "PRISM analyzed the policy healthy: No major red flags found.";
+    toggleLabel.style.display = "none";
+    return;
+  }
+
+  summaryEl.innerText = `PRISM detected ${concernCount} privacy concerns in the policy.`;
+  toggleLabel.style.display = "block";
+  
+  toggle.onchange = (e) => {
+    detailsEl.style.display = e.target.checked ? "block" : "none";
+    toggleLabel.querySelector("span").innerText = e.target.checked ? "Hide Details" : "See Details";
+  };
+
+  detailsEl.innerHTML = "";
+  
+  const labels = {
+    dataSelling: "Data Selling / Third-Party Sharing",
+    locationTracking: "Real-time Location Tracking",
+    contactSharing: "Contact List Access",
+    advertising: "Targeted Advertising Partners"
+  };
+
+  const descriptions = {
+    dataSelling: "This site claims the right to share or sell your data to undefined third parties.",
+    locationTracking: "The policy mentions tracking your GPS or IP-based location.",
+    contactSharing: "The site may ask to sync and store your phone or email contacts.",
+    advertising: "Your behavior is tracked to build a profile for personalized ads."
+  };
+
+  for (const [key, value] of Object.entries(findings)) {
+    if (value === true) {
+      const concernItem = document.createElement("div");
+      concernItem.style.marginBottom = "8px";
+      concernItem.style.padding = "6px";
+      concernItem.style.background = "#1e293b";
+      concernItem.style.borderRadius = "4px";
+      concernItem.style.borderLeft = "3px solid #f87171";
+
+      const header = document.createElement("div");
+      header.style.display = "flex";
+      header.style.justifyContent = "space-between";
+      header.style.alignItems = "center";
+      
+      const title = document.createElement("span");
+      title.innerText = labels[key];
+      title.style.fontSize = "11px";
+      title.style.fontWeight = "bold";
+      title.style.color = "#fca5a5";
+
+      const statusBadge = document.createElement("span");
+      statusBadge.innerText = "UNNECESSARY";
+      statusBadge.style.fontSize = "9px";
+      statusBadge.style.background = "#450a0a";
+      statusBadge.style.color = "#f87171";
+      statusBadge.style.padding = "2px 4px";
+      statusBadge.style.borderRadius = "3px";
+
+      header.appendChild(title);
+      header.appendChild(statusBadge);
+
+      const desc = document.createElement("div");
+      desc.innerText = descriptions[key];
+      desc.style.fontSize = "10px";
+      desc.style.color = "#94a3b8";
+      desc.style.marginTop = "3px";
+
+      concernItem.appendChild(header);
+      concernItem.appendChild(desc);
+      detailsEl.appendChild(concernItem);
+    }
+  }
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.innerText = "Read Full Policy";
+  link.style.display = "block";
+  link.style.fontSize = "10px";
+  link.style.marginTop = "5px";
+  link.style.color = "#60a5fa";
+  link.style.textAlign = "right";
+  detailsEl.appendChild(link);
+}
+
+

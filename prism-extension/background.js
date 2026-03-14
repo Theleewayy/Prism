@@ -1,114 +1,133 @@
 importScripts('domain-checker.js', 'cookie-scanner.js');
 
-function updateToolbarBadge(score, tabId = null) {
-    let actionProps = { text: score.toString() };
-    if (tabId !== null) actionProps.tabId = tabId;
-    
-    chrome.action.setBadgeText(actionProps);
+const policyCache = {};
 
-    let colorProps = { color: "#FF0000" }; // Default Red
-    if (tabId !== null) colorProps.tabId = tabId;
-
-    if (score > 80) {
-        // Green ('Safe')
-        colorProps.color = "#00FF00";
-    } else if (score >= 50 && score <= 80) {
-        // Yellow ('Caution')
-        colorProps.color = "#FFFF00";
-    } else {
-        // Red ('High Risk')
-        colorProps.color = "#FF0000";
-    }
-
-    chrome.action.setBadgeBackgroundColor(colorProps);
-}
-
-async function evaluateTabScore(tabId, urlString) {
-    if (!urlString || !urlString.startsWith('http')) {
-        chrome.action.setBadgeText({ text: "", tabId: tabId });
-        return;
-    }
-
-    let url;
-    try {
-        url = new URL(urlString);
-    } catch (e) {
-        return;
-    }
-    
-    let domain = url.hostname;
-    
-    // Gather cookies for domain
-    const cookies = await chrome.cookies.getAll({ domain: domain });
-    let stalkingCount = 0;
-    for (const cookie of cookies) {
-        let info = KNOWN_COOKIES[cookie.name];
-        if (!info) {
-            info = classifyUnknownCookie(cookie.name);
-        }
-        if (info.type === 'stalking') {
-            stalkingCount++;
-        }
-    }
-
-    // Gather trust metrics
-    const trustReport = await getDomainTrustMetrics(urlString);
-
-    let score = 100;
-    
-    if (stalkingCount > 0) {
-        score -= (stalkingCount * 20);
-    }
-    if (domain.includes("xn--")) {
-        score -= 50;
-    }
-    if (domain.length > 25) {
-        score -= 10;
-    }
-    if (!trustReport.isHttps) {
-        score -= 30;
-    }
-    if (trustReport.isNewDomain) {
-        score -= 20;
-    }
-    
-    score = Math.max(0, score);
-    updateToolbarBadge(score, tabId);
-}
-
-// Ensure this updates every time the user switches tabs
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
-    try {
-        const tab = await chrome.tabs.get(activeInfo.tabId);
-        if (tab.url) {
-            evaluateTabScore(tab.id, tab.url);
-        }
-    } catch (e) {
-        console.error("Error retrieving tab on activated:", e);
-    }
-});
-
-// Ensure this updates every time the page reloads or URL changes
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status === 'complete' && tab.url) {
-        evaluateTabScore(tabId, tab.url);
-    }
-});
-
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === "scamWarning") {
         if (sender.tab) {
             chrome.action.setBadgeText({ text: "!", tabId: sender.tab.id });
             chrome.action.setBadgeBackgroundColor({ color: "red", tabId: sender.tab.id });
         }
-    } else if (msg.type === "updateZeroTrustScore") {
-        // From popup UI or other foreground scripts
-        if (msg.data && typeof msg.data.score === 'number') {
-             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                 if (tabs && tabs.length > 0) {
-                     updateToolbarBadge(msg.data.score, tabs[0].id);
-                 }
-             });
+    } else if (msg.type === "foundPolicyLink") {
+        if (sender.tab) {
+            analyzePolicyInBackground(msg.url, sender.tab.id);
         }
+    } else if (msg.type === "getPolicyAnalysis") {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs && tabs.length > 0) {
+                const tabId = tabs[0].id;
+                sendResponse({ data: policyCache[tabId] || null });
+            }
+        });
+        return true; // Keep channel open for async response
+    } else if (msg.type === "resolveURL") {
+        resolveFinalURL(msg.url).then(finalUrl => {
+            sendResponse({ finalUrl: finalUrl });
+        });
+        return true;
     }
 });
+
+async function resolveFinalURL(url) {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+
+        const response = await fetch(url, {
+            method: 'HEAD',
+            redirect: 'follow',
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        return response.url;
+    } catch (e) {
+        console.error("PRISM URL resolution failed:", e);
+        return url; // Return original on failure
+    }
+}
+
+
+async function analyzePolicyInBackground(url, tabId) {
+    try {
+        const response = await fetch(url);
+        const policyContent = (await response.text()).toLowerCase();
+
+        const findings = {
+            dataSelling: /sell.*your.*(data|information)|share.*with.*third.*parties/i.test(policyContent),
+            locationTracking: /track.*your.*location|gps|real-time.*location/i.test(policyContent),
+            contactSharing: /access.*your.*contacts|sync.*contacts/i.test(policyContent),
+            advertising: /targeted.*ads|advertising.*partners|personalize.*ads/i.test(policyContent)
+        };
+
+        policyCache[tabId] = {
+            findings: findings,
+            url: url
+        };
+        
+        // Notify background to analyze
+        chrome.runtime.sendMessage({
+            type: "policyAnalysisUpdate",
+            tabId: tabId,
+            data: policyCache[tabId]
+        });
+
+        // Trigger summary push
+        pushTabSummary(tabId);
+
+    } catch (e) {
+        console.error("PRISM background fetch failed:", e);
+    }
+}
+
+async function pushTabSummary(tabId) {
+    try {
+        const tab = await chrome.tabs.get(tabId);
+        if (!tab || !tab.url) return;
+        
+        const url = new URL(tab.url);
+        const cookies = await chrome.cookies.getAll({ domain: url.hostname });
+        
+        let trackingCount = 0;
+        cookies.forEach(c => {
+            let info = KNOWN_COOKIES[c.name] || classifyUnknownCookie(c.name);
+            if (info.type === 'stalking' || info.type === 'analytics') trackingCount++;
+        });
+
+        const policyData = policyCache[tabId];
+        let policySummary = "Policy not scanned yet.";
+        let concerns = 0;
+        
+        if (policyData && policyData.findings) {
+            concerns = Object.values(policyData.findings).filter(v => v === true).length;
+            policySummary = concerns > 0 ? `${concerns} Privacy Concerns detected.` : "Policy looks healthy.";
+        }
+
+        chrome.tabs.sendMessage(tabId, {
+            type: "prismSummaryUpdate",
+            data: {
+                trackingCount: trackingCount,
+                policyConcerns: concerns,
+                policySummary: policySummary
+            }
+        }).catch(() => {}); // Ignore errors if content script not ready
+    } catch (e) {
+        console.error("Push summary failed:", e);
+    }
+}
+
+// Clean up cache on tab close
+chrome.tabs.onRemoved.addListener((tabId) => {
+    delete policyCache[tabId];
+});
+
+// Clear badge on new loads
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'loading') {
+        chrome.action.setBadgeText({ text: "", tabId: tabId });
+    }
+    if (changeInfo.status === 'complete' && tab.url) {
+        pushTabSummary(tabId);
+    }
+});
+
