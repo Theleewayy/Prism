@@ -19,14 +19,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Listen for policy analysis updates from background
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg.type === "policyAnalysisUpdate") {
-        updatePolicyUI(msg.data.findings, msg.data.url);
+        updatePolicyUI(msg.data.findings, msg.data.url, msg.data.snippets);
       }
     });
 
     // Request current analysis from background
     chrome.runtime.sendMessage({ type: "getPolicyAnalysis" }, (response) => {
       if (response && response.data) {
-        updatePolicyUI(response.data.findings, response.data.url);
+        updatePolicyUI(response.data.findings, response.data.url, response.data.snippets);
       }
     });
 
@@ -267,7 +267,7 @@ function removeCookie(cookie, urlObj, listItemElement) {
   });
 }
 
-function updatePolicyUI(findings, url) {
+function updatePolicyUI(findings, url, snippets = {}) {
   const summaryEl = document.getElementById("policySummary");
   const detailsEl = document.getElementById("policyDetails");
   const toggleLabel = document.getElementById("policyToggleLabel");
@@ -310,11 +310,11 @@ function updatePolicyUI(findings, url) {
   for (const [key, value] of Object.entries(findings)) {
     if (value === true) {
       const concernItem = document.createElement("div");
-      concernItem.style.marginBottom = "8px";
-      concernItem.style.padding = "6px";
+      concernItem.style.marginBottom = "10px";
+      concernItem.style.padding = "10px";
       concernItem.style.background = "#1e293b";
-      concernItem.style.borderRadius = "4px";
-      concernItem.style.borderLeft = "3px solid #f87171";
+      concernItem.style.borderRadius = "6px";
+      concernItem.style.borderLeft = "4px solid #f87171";
 
       const header = document.createElement("div");
       header.style.display = "flex";
@@ -342,10 +342,27 @@ function updatePolicyUI(findings, url) {
       desc.innerText = descriptions[key];
       desc.style.fontSize = "10px";
       desc.style.color = "#94a3b8";
-      desc.style.marginTop = "3px";
+      desc.style.marginTop = "4px";
 
       concernItem.appendChild(header);
       concernItem.appendChild(desc);
+
+      // Add Snippet if available
+      if (snippets[key]) {
+        const snippetBox = document.createElement("div");
+        snippetBox.style.marginTop = "8px";
+        snippetBox.style.padding = "6px";
+        snippetBox.style.background = "rgba(0,0,0,0.3)";
+        snippetBox.style.borderRadius = "4px";
+        snippetBox.style.fontSize = "10px";
+        snippetBox.style.color = "#cbd5e1";
+        snippetBox.style.fontStyle = "italic";
+        snippetBox.style.borderLeft = "2px solid #64748b";
+        
+        snippetBox.innerHTML = `<strong>Scraped Evidence:</strong><br>"${snippets[key]}"`;
+        concernItem.appendChild(snippetBox);
+      }
+
       detailsEl.appendChild(concernItem);
     }
   }

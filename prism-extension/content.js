@@ -195,13 +195,23 @@ function updateBanner(data) {
     const statusEl = document.getElementById("prism-banner-status");
     if (!statusEl) return;
 
-    if (!data) return;
+    if (!data || !data.categories) return;
 
-    const cookieText = data.trackingCount > 0 ? `<span style="color: #f87171;">${data.trackingCount} Trackers</span>` : "No Trackers";
-    const policyText = `<span style="color: ${data.policyConcerns > 0 ? '#fbbf24' : '#34d399'}">${data.policySummary}</span>`;
+    const cat = data.categories;
+    let cookieDetails = [];
+    if (cat.advertising > 0) cookieDetails.push(`<span style="color: #f87171;">${cat.advertising} Advertising</span>`);
+    if (cat.analytics > 0) cookieDetails.push(`<span style="color: #fbbf24;">${cat.analytics} Analytics</span>`);
     
-    statusEl.innerHTML = `${cookieText} &bull; ${policyText}`;
+    const cookieSummary = cookieDetails.length > 0 
+        ? `${cat.tracking} Trackers (${cookieDetails.join(", ")})` 
+        : `<span style="color: #34d399;">No Trackers Found</span>`;
+
+    const policyColor = data.policyConcerns > 0 ? '#fbbf24' : '#34d399';
+    const policyText = `<span style="color: ${policyColor}; font-weight: 600;">${data.policySummary}</span>`;
+    
+    statusEl.innerHTML = `<div>${cookieSummary}</div><div style="margin-top: 2px;">${policyText}</div>`;
 }
+
 
 chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "prismSummaryUpdate") {

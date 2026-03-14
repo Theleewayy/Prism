@@ -24,8 +24,10 @@
     <div class="section">
         <h3>Policy Analysis</h3>
         <div id="policySummary" style="font-size:12px;">Scanning policy...</div>
-        <div id="policyDetails" style="display:none; margin-top:5px; border-top:1px solid #334155; padding-top:5px;"></div>
-        <label id="policyToggleLabel" style="font-size:11px; cursor:pointer; color:#60a5fa; display:none; margin-top:5px;">
+        <div id="policyDetails" style="display:none; margin-top:5px; border-top:1px solid #334155; padding-top:5px;">
+        </div>
+        <label id="policyToggleLabel"
+            style="font-size:11px; cursor:pointer; color:#60a5fa; display:none; margin-top:5px;">
             <input type="checkbox" id="policyToggle" style="display:none;"> <span>See Details</span>
         </label>
     </div>
@@ -50,19 +52,15 @@
             <input type="checkbox" id="cookieToggle"> Show Accepted Cookies
         </label>
         <div id="cookieListContainer" style="display: none; margin-top: 10px;">
-            <div id="cookieList" style="max-height: 150px; overflow-y: auto; font-size: 11px; margin-bottom: 5px;"></div>
-            <button id="clearAllCookiesBtn" style="font-size: 11px; padding: 4px; background: #dc2626;">Turn Off All Known Cookies</button>
+            <div id="cookieList" style="max-height: 150px; overflow-y: auto; font-size: 11px; margin-bottom: 5px;">
+            </div>
+            <button id="clearAllCookiesBtn" style="font-size: 11px; padding: 4px; background: #dc2626;">Turn Off All
+                Known Cookies</button>
         </div>
     </div>
 
-    <div class="section">
-        <h3>Trackers Prevented</h3>
 
-        <h2 id="blocked">0</h2>
 
-    </div>
-
-    <button id="scan">Scan Website</button>
 
     <script src="domain-checker.js"></script>
     <script src="cookie-scanner.js"></script>
