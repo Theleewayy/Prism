@@ -110,6 +110,127 @@
           color: #EF4444;
           font-weight: bold;
         }
+
+        /* Cookie Summary Card */
+        .cookie-card {
+          position: fixed;
+          bottom: 70px;
+          right: 20px;
+          width: 340px;
+          background: #ffffff;
+          border-radius: 12px;
+          box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          color: #1F2937;
+          pointer-events: auto;
+          display: none;
+          flex-direction: column;
+          border: 1px solid #E5E7EB;
+          overflow: hidden;
+          z-index: 2147483647;
+        }
+        .cookie-card-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 12px 16px;
+          background: #F9FAFB;
+          border-bottom: 1px solid #E5E7EB;
+        }
+        .cookie-card-title {
+          font-size: 15px;
+          font-weight: 600;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 0;
+        }
+        .cookie-risk-pill {
+          font-size: 11px;
+          padding: 2px 8px;
+          border-radius: 9999px;
+          font-weight: 500;
+          text-transform: uppercase;
+        }
+        .cookie-risk-pill.low { background: #D1FAE5; color: #065F46; }
+        .cookie-risk-pill.medium { background: #FEF3C7; color: #92400E; }
+        .cookie-risk-pill.high { background: #FEE2E2; color: #991B1B; }
+        
+        .cookie-close-btn {
+          cursor: pointer;
+          background: none;
+          border: none;
+          font-size: 16px;
+          color: #6B7280;
+          padding: 4px;
+        }
+        .cookie-close-btn:hover { color: #111827; }
+
+        .cookie-card-body {
+          padding: 16px;
+          font-size: 13px;
+          line-height: 1.5;
+        }
+        .cookie-card-body ul {
+          margin: 0 0 16px 0;
+          padding-left: 20px;
+        }
+        .cookie-card-body li { margin-bottom: 8px; }
+
+        .cookie-recommendation {
+          background: #F3F4F6;
+          padding: 10px 12px;
+          border-radius: 6px;
+          display: flex;
+          gap: 8px;
+          align-items: flex-start;
+          font-weight: 500;
+        }
+
+        .cookie-card-footer {
+          padding: 12px 16px;
+          border-top: 1px solid #E5E7EB;
+          display: flex;
+          gap: 8px;
+        }
+        .cookie-btn {
+          flex: 1;
+          padding: 8px;
+          border-radius: 6px;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+          border: 1px solid transparent;
+          transition: all 0.2s;
+        }
+        .cookie-btn-primary {
+          background: #3B82F6;
+          color: white;
+        }
+        .cookie-btn-primary:hover { background: #2563EB; }
+        
+        .cookie-btn-secondary {
+          background: white;
+          color: #374151;
+          border-color: #D1D5DB;
+        }
+        .cookie-btn-secondary:hover { background: #F3F4F6; }
+
+        /* Skeleton Loading */
+        .skeleton-block {
+          height: 12px;
+          background: #E5E7EB;
+          border-radius: 4px;
+          margin-bottom: 8px;
+          animation: pulse 1.5s infinite;
+        }
+        .skeleton-block:last-child { width: 60%; }
+        
+        @keyframes pulse {
+          0% { opacity: 1; }
+          50% { opacity: 0.5; }
+          100% { opacity: 1; }
+        }
       `;
       shadowRoot.appendChild(style);
 
@@ -141,10 +262,14 @@
       let debounceTimer = null;
       const observer = new MutationObserver((mutations) => {
         let shouldUpdate = false;
+        let checkForCookieBanner = false;
+
         for (const mut of mutations) {
           if (mut.addedNodes.length > 0 || mut.type === 'characterData') {
             shouldUpdate = true;
-            break;
+          }
+          if (mut.addedNodes.length > 0) {
+            checkForCookieBanner = true;
           }
         }
         
@@ -152,6 +277,9 @@
           clearTimeout(debounceTimer);
           debounceTimer = setTimeout(() => {
             updateBadgeScore();
+            if (checkForCookieBanner && !cookieBannerDetected) {
+              detectCookieBanner();
+            }
           }, 1000);
         }
       });
@@ -543,6 +671,13 @@
               );
             }
             sendResponse({ success: true });
+          } else if (request.type === 'COOKIE_SUMMARY_RESULT') {
+            // Handle push response from background ai summarizer
+            if (request.payload) {
+              clearTimeout(cookieFallbackTimer);
+              renderCookieSummaryCard(request.payload.summary, request.payload.recommendation, request.payload.riskLevel);
+            }
+            sendResponse({ success: true });
           }
         });
         console.log('[DPS] Messaging bridge connected.');
@@ -550,7 +685,274 @@
     } catch (err) {
       console.error('[DPS] Error connecting messaging bridge:', err);
     }
+
+    // Add local testing listener for the homograph test page
+    window.addEventListener("message", (event) => {
+      if (event.source !== window || !event.data || event.data.type !== 'TEST_HOMOGRAPH') {
+        return;
+      }
+      
+      console.log(`[DPS] Triggered homograph test for: ${event.data.hostname}`);
+      const isHomograph = detectHomograph(event.data.hostname);
+      if (!isHomograph) {
+        console.log(`[DPS] ${event.data.hostname} is considered safe.`);
+      }
+    }, false);
   }
+
+  // === COOKIE SIMPLIFIER MODULE START ===
+  
+  let cookieBannerDetected = false;
+  let originalCookieBannerEl = null;
+  let cookieCardEl = null;
+  let cookieFallbackTimer = null;
+
+  function detectCookieBanner() {
+    if (cookieBannerDetected) return null;
+
+    try {
+      // 1. Check by ID/Class Patterns
+      const classPatterns = ['cookie', 'consent', 'gdpr', 'cc-banner', 'cookie-notice', 'cookie-popup', 'privacy-banner', 'onetrust', 'cookielaw', 'truste', 'cookiebanner'];
+      const textPatterns = ['we use cookies', 'privacy preferences', 'cookie consent', 'personalized ads'];
+      
+      let bestCandidate = null;
+
+      // Scan standard elements
+      const elements = document.querySelectorAll('div, section, aside, form, dialog');
+      for (const el of elements) {
+        if (!isVisible(el)) continue; // ignore hidden elements
+
+        // Check ID/Class
+        const idClassStr = (el.id + ' ' + el.className).toLowerCase();
+        const matchesClass = classPatterns.some(p => idClassStr.includes(p));
+
+        // Check Role
+        const role = el.getAttribute('role');
+        const matchesRole = (role === 'dialog' || role === 'alertdialog');
+
+        if (matchesClass || matchesRole) {
+          // Verify text relevance to avoid false positives
+          const text = (el.innerText || '').toLowerCase();
+          if (textPatterns.some(p => text.includes(p)) || text.includes('cookie')) {
+            bestCandidate = el;
+            break; // Found highest confidence match
+          }
+        }
+      }
+
+      if (bestCandidate) {
+        cookieBannerDetected = true;
+        originalCookieBannerEl = bestCandidate;
+        
+        let identifier = bestCandidate.id ? `#${bestCandidate.id}` : (bestCandidate.className ? `.${bestCandidate.className.split(' ')[0]}` : '');
+        console.log(`[DPS] Cookie banner detected: <${bestCandidate.tagName.toLowerCase()}> ${identifier}`);
+        
+        extractAndSummarizeBanner(bestCandidate);
+        return bestCandidate;
+      }
+      return null;
+
+    } catch (err) {
+      console.error('[DPS] Error detecting cookie banner:', err);
+      return null;
+    }
+  }
+
+  function extractBannerText(element) {
+    try {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+      let textNodes = [];
+      let node;
+
+      while ((node = walker.nextNode())) {
+        const parent = node.parentElement;
+        if (parent && !['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(parent.tagName) && isVisible(parent)) {
+          textNodes.push(node.nodeValue.trim());
+        }
+      }
+
+      // Deduplicate and join
+      const uniquePhrases = [...new Set(textNodes.filter(t => t.length > 5))];
+      let rawText = uniquePhrases.join(' ').replace(/\s+/g, ' ').trim();
+
+      // Truncate cleanly around 2000 chars at a sentence boundary
+      if (rawText.length > 2000) {
+        rawText = rawText.substring(0, 2000);
+        const lastPeriod = rawText.lastIndexOf('.');
+        if (lastPeriod > 0) {
+          rawText = rawText.substring(0, lastPeriod + 1);
+        }
+      }
+      return rawText;
+    } catch (err) {
+      console.error('[DPS] Error extracting banner text:', err);
+      return '';
+    }
+  }
+
+  function extractAndSummarizeBanner(element) {
+    const rawText = extractBannerText(element);
+    if (!rawText) return;
+
+    // Inject loading UI first
+    injectCookieSummaryCardLoading();
+
+    // Hide original banner (don't remove)
+    element.style.visibility = 'hidden';
+
+    // Set fallback timeout
+    cookieFallbackTimer = setTimeout(() => {
+      fallbackSummarize(rawText);
+    }, 4000);
+
+    // Send to background
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'SUMMARIZE_COOKIE', payload: { text: rawText } },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              console.warn('[DPS] Background worker unavailable for AI cookie summary, waiting for fallback...');
+              return;
+            }
+            if (response && response.summary) {
+              clearTimeout(cookieFallbackTimer);
+              renderCookieSummaryCard(response.summary, response.recommendation, response.riskLevel);
+            }
+          }
+        );
+      } catch (err) {
+        console.warn('[DPS] Failed to send to background, waiting for fallback...', err);
+      }
+    }
+  }
+
+  function fallbackSummarize(text) {
+    try {
+      const lowerText = text.toLowerCase();
+      let bulletPoints = [];
+      let signalCount = 0;
+
+      if (lowerText.includes('advertis') || lowerText.includes('tracking') || lowerText.includes('personalized ads')) {
+        bulletPoints.push("This site uses cookies for advertising or analytics");
+        signalCount++;
+      }
+      if (lowerText.includes('third party') || lowerText.includes('third-party') || lowerText.includes('partners')) {
+        bulletPoints.push("Your data may be shared with third-party partners");
+        signalCount++;
+      }
+      if (lowerText.includes('location')) {
+        bulletPoints.push("Your location data may be collected");
+        signalCount++;
+      }
+      if (lowerText.includes('personaliz') || lowerText.includes('tailor')) {
+        bulletPoints.push("Content may be personalized based on your behavior");
+        signalCount++;
+      }
+      
+      const retentionMatch = lowerText.match(/(?:retained|kept|stored) for (\d+ (?:days|months|years))/);
+      if (retentionMatch) {
+         bulletPoints.push(`Data is retained for ${retentionMatch[1]}`);
+         signalCount++;
+      }
+
+      if (bulletPoints.length === 0) {
+        bulletPoints.push("Standard analytical and functional cookies detected.");
+      }
+      bulletPoints.push("Quick scan (AI summary unavailable)");
+
+      let riskLevel = 'low';
+      let recommendation = 'Safe to accept';
+
+      if (signalCount >= 4) {
+        riskLevel = 'high';
+        recommendation = 'Accept only essential cookies';
+      } else if (signalCount >= 2) {
+        riskLevel = 'medium';
+        recommendation = 'Accept only essential cookies';
+      }
+
+      renderCookieSummaryCard(bulletPoints, recommendation, riskLevel);
+
+    } catch (err) {
+      console.error('[DPS] Error in fallback summarizer:', err);
+    }
+  }
+
+  function injectCookieSummaryCardLoading() {
+    if (cookieCardEl) cookieCardEl.remove();
+    
+    cookieCardEl = document.createElement('div');
+    cookieCardEl.className = 'cookie-card';
+    
+    cookieCardEl.innerHTML = `
+      <div class="cookie-card-header">
+        <h3 class="cookie-card-title">🍪 Cookie Summary</h3>
+        <button class="cookie-close-btn" title="Dismiss">✕</button>
+      </div>
+      <div class="cookie-card-body">
+        <p style="margin-top:0; color:#6B7280;">Analyzing cookie policy...</p>
+        <div class="skeleton-block"></div>
+        <div class="skeleton-block"></div>
+        <div class="skeleton-block"></div>
+      </div>
+    `;
+
+    shadowRoot.appendChild(cookieCardEl);
+    cookieCardEl.style.display = 'flex';
+
+    cookieCardEl.querySelector('.cookie-close-btn').addEventListener('click', dismissCookieSummary);
+  }
+
+  function renderCookieSummaryCard(bullets, recommendation, riskLevel) {
+    if (!cookieCardEl) return;
+
+    console.log(`[DPS] Cookie summary rendered: ${riskLevel}`);
+
+    let listHtml = '<ul>';
+    bullets.forEach(b => listHtml += `<li>${b}</li>`);
+    listHtml += '</ul>';
+
+    cookieCardEl.innerHTML = `
+      <div class="cookie-card-header">
+        <h3 class="cookie-card-title">
+          🍪 Cookie Summary
+          <span class="cookie-risk-pill ${riskLevel}">${riskLevel} Risk</span>
+        </h3>
+        <button class="cookie-close-btn" title="Dismiss">✕</button>
+      </div>
+      <div class="cookie-card-body">
+        ${listHtml}
+        <div class="cookie-recommendation">
+          <span>💡</span>
+          <span>${recommendation}</span>
+        </div>
+      </div>
+      <div class="cookie-card-footer">
+        <button class="cookie-btn cookie-btn-primary" id="dps-btn-essential">Accept Essential Only</button>
+        <button class="cookie-btn cookie-btn-secondary" id="dps-btn-full">See Full Policy</button>
+      </div>
+    `;
+
+    cookieCardEl.querySelector('.cookie-close-btn').addEventListener('click', dismissCookieSummary);
+    cookieCardEl.querySelector('#dps-btn-full').addEventListener('click', dismissCookieSummary);
+    cookieCardEl.querySelector('#dps-btn-essential').addEventListener('click', () => {
+      console.log('[DPS] User chose: essential only');
+      cookieCardEl.style.display = 'none';
+      // In a real implementation, this would try to automatically click the "Reject All" / "Settings" button.
+    });
+  }
+
+  function dismissCookieSummary() {
+    if (cookieCardEl) {
+      cookieCardEl.style.display = 'none';
+      if (originalCookieBannerEl) {
+        originalCookieBannerEl.style.visibility = 'visible';
+      }
+    }
+  }
+
+  // === COOKIE SIMPLIFIER MODULE END ===
 
   // Init Runner
   function init() {
@@ -561,6 +963,11 @@
     
     updateBadgeScore();
     detectHomograph(window.location.hostname);
+    
+    // Attempt initial sync detection
+    setTimeout(() => {
+        detectCookieBanner();
+    }, 500); // Slight delay to let DOM settle
   }
 
   // Self-invoking trigger
